@@ -20,7 +20,7 @@ from reportlab.lib import colors
 
 
 # Twitter API credentials
-bearerToken = 'AAAAAAAAAAAAAAAAAAAAADC8pAEAAAAANEIS3CXDEC%2F46BYshllcTeAXSac%3DDxgs2cEvCj3VzmmvWLoNersL6xRLsMJFGS7EXzRvNEe0NVFHYK'
+bearerToken = ''
 
 
 def create_headers(bearerToken):
