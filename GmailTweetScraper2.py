@@ -125,7 +125,7 @@ def fetchSingleTweet(username, tweet_id, tweet_cache):
     tweet_cache[tweet_id] = tweet_data
     return tweet_data, tweet_cache
   
-def fetchTweets(username, tweet_cache, max_tweets=5, max_hrs_ago=5):
+def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
     # Authenticate with Twitter API
     headers = create_headers(bearerToken)
 
