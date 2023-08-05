@@ -578,11 +578,11 @@ def formatTweets(theme, tweet_cache, tweets, topAccounts, topHashtags):
 
 def sendEmail(recipient_email, subject, body, totNumTweets, username, cc_email=None, bcc_email=None):
     # Set up email parameters
-    sender_email = "tweethan12@gmail.com"
+    sender_email = "@gmail.com"
     smtp_server = "smtp.gmail.com"
     smtp_port = 587
-    smtp_username = "tweethan12@gmail.com"
-    smtp_password = "vxhfitswtlhqfmrz"
+    smtp_username = "@gmail.com"
+    smtp_password = ""
 
     # Create email message
     msg = MIMEText(body, 'html')
@@ -622,26 +622,4 @@ def get_email_subject(actualName):
     subject_date = f"{today.month}/{today.day}"
     email_subject = f"{actualName} {subject_date}"
     return email_subject
-
-
-# chmod +x /Users/ethanreed/ManatuckScraper/TweetSend.py // execute file permissions
-# crontab -e // enter cron config in terminal
-# 23 15 * * * /Users/ethanreed/opt/anaconda3/bin/python3 /Users/ethanreed/ManatuckScraper/TweetSend.py // run TweetSend same time everyday
-# 'i', esc, then ':wq' then Enter, view after with 'crontab -l' then Enter
-
-# docker build -t gcr.io/gmailtweetscraper/tweetscraper .
-# docker push gcr.io/gmailtweetscraper/tweetscraper
-# gcloud run deploy --image gcr.io/gmailtweetscraper/tweetscraper --platform managed --project gmailtweetscraper
-    # enter, 25
-#
-
-
-
-# Old Twitter API credentials, from os.environ.get('TWITTER_CONSUMER_KEY')
-# consumerKey = 'FS8KA9WE0FbnWDODHbf4zyc3u'
-# consumerSecret = 'Nrl4cyaJWSNWR2XnGxOF2tkUoNN8fmDgs1xkdGK54VLkJo3QGo'
-# accessToken = '905838785778380801-YcSvHOOS5hjhFRN9VA4BRIzcJnLA0Sw'
-# accessTokenSecret = 'XTEdD7fUELBA8b7bYeTLzpWyUPZPaiqErvP7IFYkuQhB6'
-
-# VSC - pip install tweepy pytz newspaper3k reportlab scikit-learn
 
