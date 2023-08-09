@@ -19,7 +19,6 @@ from PIL import Image
 from reportlab.lib import colors
 #from sklearn.ensemble import RandomForestClassifier
 
-
 # Twitter API credentials
 bearerToken = ''
 
