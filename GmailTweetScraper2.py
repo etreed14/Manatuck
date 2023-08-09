@@ -60,7 +60,11 @@ conn.commit()
 
 def userExists(username):
     cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
-    return cursor.fetchone()
+    row = cursor.fetchone()
+    if row: # Convert the tuple to a dictionary
+        columns = ['user_id', 'username', 'actual_name', 'profileImageUrl']
+        return dict(zip(columns, row))
+    return None
 
 def cacheUser(user_data):
     cursor.execute('''
