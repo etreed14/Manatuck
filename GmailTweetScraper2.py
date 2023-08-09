@@ -6,6 +6,7 @@ import time
 import base64
 import tweepy
 import smtplib
+import sqlite3
 import requests
 import datetime
 from io import BytesIO
@@ -23,6 +24,70 @@ from reportlab.lib import colors
 bearerToken = ''
 
 
+# Connect to SQLite database (or create it if it doesn't exist)
+conn = sqlite3.connect('tweet_cache.db')
+cursor = conn.cursor()
+
+# Create tweet_cache table if it doesn't exist
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT,
+    actual_name TEXT,
+    profileImageUrl TEXT
+)
+''')
+conn.commit()
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS tweet_cache (
+    tweet_id TEXT PRIMARY KEY,
+    username TEXT,
+    actual_name TEXT,
+    tweet_text TEXT,
+    replies INTEGER,
+    retweets INTEGER,
+    likes INTEGER,
+    profileImageUrl TEXT,
+    tweetUrl TEXT,
+    referencedTweetUrl TEXT,
+    hours_since_post INTEGER,
+    mins_since_post INTEGER,
+    media_urls TEXT,
+    in_reply_to_user_id TEXT
+)
+''')
+conn.commit()
+
+def userExists(username):
+    cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+    return cursor.fetchone()
+
+def cacheUser(user_data):
+    cursor.execute('''
+    INSERT OR REPLACE INTO users (user_id, username, actual_name, profileImageUrl)
+    VALUES (?, ?, ?, ?)
+    ''', (user_data['user_id'], user_data['username'], user_data['actual_name'], user_data['profileImageUrl']))
+    conn.commit()
+    
+def tweetExists(tweet_id, user_id):
+    cursor.execute('SELECT * FROM tweets WHERE tweet_id = ? AND user_id = ?', (tweet_id, user_id))
+    return cursor.fetchone()
+    
+def cacheTweet(tweet_data):
+    cursor.execute('''
+    INSERT OR REPLACE INTO tweets (
+        tweet_id, user_id, tweet_text, replies, retweets, likes,
+        tweetUrl, referencedTweetUrl, hours_since_post,
+        mins_since_post, media_urls, in_reply_to_user_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', tweet_data)
+    conn.commit()
+
+def create_headers(bearerToken):
+    headers = {"Authorization": "Bearer {}".format(bearerToken)}
+    return headers
+
 def create_headers(bearerToken):
     headers = {"Authorization": "Bearer {}".format(bearerToken)}
     return headers
@@ -37,10 +102,13 @@ def get_article_info(url):
         "image": article.top_image
     }
   
-tweet_cache = {}
+# tweet_cache = {}
 
-def fetchSingleTweet(username, tweet_id, tweet_cache):
-#    if tweet_id in tweet_cache: return tweet_cache[tweet_id]
+def fetchSingleTweet(username, tweet_id):
+    cached_tweet = tweetExists(tweet_id, username)
+    if cached_tweet:
+        return cached_tweet
+        
     # Authenticate with Twitter API
     headers = create_headers(bearerToken)
     # Fetch the tweet
@@ -73,6 +141,7 @@ def fetchSingleTweet(username, tweet_id, tweet_cache):
     if response.status_code != 200:
         print(f"Could not fetch tweet with ID {tweet_id}: {response.status_code}, {response.text}")
         return None
+        
     tweet = response.json()
     if 'data' not in tweet:
         print(f"Unexpected response format for tweet with ID {tweet_id}")
@@ -122,52 +191,74 @@ def fetchSingleTweet(username, tweet_id, tweet_cache):
             referencedTweetUrl = f"https://twitter.com/{referenced_username}/status/{ref_tweet['id']}"
 
     tweet_data = (actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet['data'].get('in_reply_to_user_id', None))
-    tweet_cache[tweet_id] = tweet_data
-    return tweet_data, tweet_cache
+    
+    # Cache the tweet's data
+    tweet_data_db = (
+        tweet_id, user['id'], tweet_text, replies, retweets, likes,
+        tweetUrl, referencedTweetUrl, hours_since_post,
+        mins_since_post, ','.join(media_urls), tweet['data'].get('in_reply_to_user_id', None)
+    )
+    cacheTweet(tweet_data_db)
+    # Cache the user's data
+    user_data_db = (user['id'], username, user['name'], user['profile_image_url'])
+    cacheUser(user_data_db)
+    
+    return tweet_data
   
-def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
+def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
     # Authenticate with Twitter API
     headers = create_headers(bearerToken)
 
-    # Fetch the user's data
-    user_url = f"https://api.twitter.com/2/users/by/username/{username}?user.fields=id,profile_image_url,name"
-    response = requests.request("GET", user_url, headers=headers)
-    print(f"Fetching details for user: {username}")
-    # Check rate limit headers
-    remaining = int(response.headers.get('x-rate-limit-remaining', 0))
-    reset_time = int(response.headers.get('x-rate-limit-reset', 0))
-    # If we're about to hit the rate limit, sleep until the reset time
-    if remaining <= 1:  # Adjust this threshold as needed
-        now = time.time()
-        sleep_duration = reset_time - now
-        if sleep_duration > 0:
-            now_dt = datetime.datetime.now(pytz.timezone('US/Eastern'))
-            minutes, seconds = divmod(sleep_duration, 60)
-            resume_time = now_dt + datetime.timedelta(seconds=sleep_duration)
-            print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for {minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
+    user = userExists(username)
+    if user is None:
+        # Fetch the user's data
+        user_url = f"https://api.twitter.com/2/users/by/username/{username}?user.fields=id,profile_image_url,name"
+        response = requests.request("GET", user_url, headers=headers)
+        print(f"Fetching details for user: {username}")
+        # Check rate limit headers
+        remaining = int(response.headers.get('x-rate-limit-remaining', 0))
+        reset_time = int(response.headers.get('x-rate-limit-reset', 0))
+        # If we're about to hit the rate limit, sleep until the reset time
+        if remaining <= 1:  # Adjust this threshold as needed
+            now = time.time()
+            sleep_duration = reset_time - now
+            if sleep_duration > 0:
+                now_dt = datetime.datetime.now(pytz.timezone('US/Eastern'))
+                minutes, seconds = divmod(sleep_duration, 60)
+                resume_time = now_dt + datetime.timedelta(seconds=sleep_duration)
+                print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for {minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
+                time.sleep(sleep_duration)
+        if response.status_code == 429:
+            reset_time = int(response.headers.get('x-rate-limit-reset')) # Get reset time from headers
+            now = datetime.datetime.now(pytz.timezone('US/Eastern'))
+            sleep_duration = reset_time - int(time.time()) # Calculate sleep duration
+            minutes, seconds = divmod(sleep_duration, 60) # Convert sleep dur. to mins & secs
+            resume_time = now + datetime.timedelta(seconds=sleep_duration)
+            print(f"Rate limit exceeded at {datetime.datetime.now(pytz.timezone('US/Eastern')).strftime('%H:%M:%S')}. Sleeping for 0:{minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
             time.sleep(sleep_duration)
-    if response.status_code == 429:
-        reset_time = int(response.headers.get('x-rate-limit-reset')) # Get reset time from headers
-        now = datetime.datetime.now(pytz.timezone('US/Eastern'))
-        sleep_duration = reset_time - int(time.time()) # Calculate sleep duration
-        minutes, seconds = divmod(sleep_duration, 60) # Convert sleep dur. to mins & secs
-        resume_time = now + datetime.timedelta(seconds=sleep_duration)
-        print(f"Rate limit exceeded at {datetime.datetime.now(pytz.timezone('US/Eastern')).strftime('%H:%M:%S')}. Sleeping for 0:{minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
-        time.sleep(sleep_duration)
-        response = requests.request("GET", user_url, headers=headers)  # Retry request
-    if response.status_code != 200:
-        raise Exception(f"Request returned an error: {response.status_code}, {response.text}")
-#    print("Status code:", response.status_code)
-#    print("Response text:", response.text)
-    try:
-        user = response.json()
-    except json.JSONDecodeError:
-        print("Failed to parse JSON response")
-        user = None
-
-    # Get the user's data
-    actual_name = user['data']['name']
-    profileImageUrl = user['data']['profile_image_url']
+            response = requests.request("GET", user_url, headers=headers)  # Retry request
+        if response.status_code != 200:
+            raise Exception(f"Request returned an error: {response.status_code}, {response.text}")
+        #print("Status code:", response.status_code)
+        #print("Response text:", response.text)
+        try:
+            user = response.json()
+        except json.JSONDecodeError:
+            print("Failed to parse JSON response")
+            user = None
+        # Get the user's data
+        actual_name = user['data']['name']
+        profileImageUrl = user['data']['profile_image_url']
+        # Define the user_data dictionary
+        user_data = {
+            'user_id': user['data']['id'],
+            'username': username,
+            'actual_name': actual_name,
+            'profileImageUrl': profileImageUrl
+        }
+        cacheUser(user_data) # Cache the user's data
+    else:
+        user_data = user
 
     # Fetch the tweets
     tweets_url = f"https://api.twitter.com/2/users/{user['data']['id']}/tweets?max_results={max_tweets}&tweet.fields=created_at,entities,public_metrics,source,attachments,referenced_tweets&expansions=attachments.media_keys,author_id&media.fields=url"
@@ -177,7 +268,6 @@ def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
     # Check rate limit headers
     remaining = int(response.headers.get('x-rate-limit-remaining', 0))
     reset_time = int(response.headers.get('x-rate-limit-reset', 0))
-
     # If we're about to hit the rate limit, sleep until the reset time
     if remaining <= 1:  # Adjust this threshold as needed
         now = time.time()
@@ -188,7 +278,6 @@ def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
             resume_time = now_dt + datetime.timedelta(seconds=sleep_duration)
             print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for {minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
             time.sleep(sleep_duration)
-    
     if response.status_code == 429:
         reset_time = int(response.headers.get('x-rate-limit-reset')) # Get reset time from headers
         now = datetime.datetime.now(pytz.timezone('US/Eastern'))
@@ -200,48 +289,56 @@ def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
         response = requests.request("GET", user_url, headers=headers)  # Retry request
     if response.status_code != 200:
         raise Exception(f"Request returned an error: {response.status_code}, {response.text}")
+    
     tweets = response.json()
 
     # Process the tweets
     tweet_data = []
     accounts = {}
     hashtags = {}
+    tweetCount = 0
     for tweet in tweets['data']:
         # Get the tweet's data
         tweet_id = int(tweet['id'])
-        if tweet_id in tweet_cache:
-            tweet_data.append(tweet_cache[tweet_id])
-            continue  # Pull from cache, skip rest of loop and move on to the next tweet
-        tweet_text = tweet['text']
-        replies = tweet['public_metrics']['reply_count']
-        retweets = tweet['public_metrics']['retweet_count']
-        likes = tweet['public_metrics']['like_count']
-        now = datetime.datetime.now(pytz.utc)
-        tweet_time = datetime.datetime.strptime(tweet['created_at'], "%Y-%m-%dT%H:%M:%S.%fZ")
-        tweet_time = tweet_time.replace(tzinfo=pytz.UTC)  # Attach UTC timezone
-        hours_since_post = int((now - tweet_time).total_seconds() // 3600)
-        mins_since_post = int((now - tweet_time).total_seconds() // 60)
-        tweetUrl = f"https://twitter.com/{username}/status/{tweet['id']}"
-        media_urls = []
-        response_data = response.json()  # Parse the 'Response' object into a dictionary
+        # Check if the tweet exists in the cache
+        cached_tweet = tweetExists(tweet_id, username)
+        if cached_tweet:
+            tweet_data.append(cached_tweet)
+        else:
+            tweet_text = tweet['text']
+            replies = tweet['public_metrics']['reply_count']
+            retweets = tweet['public_metrics']['retweet_count']
+            likes = tweet['public_metrics']['like_count']
+            now = datetime.datetime.now(pytz.utc)
+            tweet_time = datetime.datetime.strptime(tweet['created_at'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            tweet_time = tweet_time.replace(tzinfo=pytz.UTC)  # Attach UTC timezone
+            hours_since_post = int((now - tweet_time).total_seconds() // 3600)
+            mins_since_post = int((now - tweet_time).total_seconds() // 60)
+            tweetUrl = f"https://twitter.com/{username}/status/{tweet['id']}"
+            media_urls = []
+            response_data = response.json()  # Parse the 'Response' object into a dictionary
 
-        # Stop if the tweet is older than max_hrs_ago
-        if hours_since_post > max_hrs_ago:
-            continue  # Skip this tweet and move on to the next one
+            # Stop if the tweet is older than max_hrs_ago
+            if mins_since_post > max_hrs_ago*60:
+                break # Exit the loop
 
-        if 'attachments' in tweet and 'media_keys' in tweet['attachments']:
-            for media_key in tweet['attachments']['media_keys']:
-                for media in response_data['includes']['media']:
-                    if media['media_key'] == media_key:
-                        if 'url' in media:
-                            media_urls.append(media['url'])
+            if 'attachments' in tweet and 'media_keys' in tweet['attachments']:
+                for media_key in tweet['attachments']['media_keys']:
+                    for media in response_data['includes']['media']:
+                        if media['media_key'] == media_key:
+                            if 'url' in media:
+                                media_urls.append(media['url'])
 
-        # Check if this tweet is a reply or a retweet
-        referencedTweetUrl = None
-        if 'referenced_tweets' in tweet:
-            # This is a reply or a retweet
-            referencedTweetUrl = f"https://twitter.com/{tweet['referenced_tweets'][0]['id']}"
+            # Check if this tweet is a reply or a retweet
+            referencedTweetUrl = None
+            if 'referenced_tweets' in tweet:
+                # This is a reply or a retweet
+                referencedTweetUrl = f"https://twitter.com/{tweet['referenced_tweets'][0]['id']}"
+             
+            tweet_data.append((actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet.get('in_reply_to_user_id', None)))
+            cacheTweet(tweet_data[-1])
 
+        tweetCount += 1
         # Collect statistics
         if 'entities' in tweet:
             if 'mentions' in tweet['entities']:
@@ -255,16 +352,6 @@ def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
                         hashtags[hashtag['tag']] = 0
                     hashtags[hashtag['tag']] += 1
         
-        tweet_data.append((actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet.get('in_reply_to_user_id', None)))
-        
-        tweet_cache[tweet_id] = tweet_data
-        
-        # Stop if the tweet is older than max_hrs_ago
-        if hours_since_post > max_hrs_ago:
-            break
-    
-    tweet_cache[tweet_id] = tweet_data
-    
     # Sort the dictionaries by value in descending order and take the first 5 items
     topAccounts = sorted(accounts.items(), key=lambda x: x[1], reverse=True)
     topHashtags = sorted(hashtags.items(), key=lambda x: x[1], reverse=True)
@@ -277,7 +364,7 @@ def fetchTweets(username, tweet_cache, max_tweets=15, max_hrs_ago=24):
         tweet_data = None
         print(f"Skipping {username}, no tweets within last {max_hrs_ago}hrs")
 
-    return tweet_data, topAccounts, topHashtags, tweet_cache
+    return tweet_data, topAccounts, topHashtags
     
 
 def formatSingleTweet(theme, actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, *args, in_thread=False):
@@ -386,7 +473,7 @@ def formatSingleTweet(theme, actual_name, username, tweet_text, replies, retweet
     return formatted_referenced_tweet
 
 
-def formatTweets(theme, tweet_cache, tweets, topAccounts, topHashtags):
+def formatTweets(theme, tweets, topAccounts, topHashtags):
 
     tBlack = '#14171A'
     dark_grey = '#657786'
@@ -493,11 +580,13 @@ def formatTweets(theme, tweet_cache, tweets, topAccounts, topHashtags):
                 referenced_tweet_link = f'<a href="{referencedTweetUrl}" style="color: #1DA1F2;">💬</a>'
                 # Extract the tweet ID from the URL
                 referenced_tweet_id = referencedTweetUrl.split('/')[-1]
-                # Fetch the referenced tweet's data
-                if referenced_tweet_id in tweet_cache:
-                    referenced_tweet_data = tweet_cache[referenced_tweet_id]
-                else:
-                    referenced_tweet_data, tweet_cache = fetchSingleTweet(username, referenced_tweet_id, tweet_cache)
+                
+                # Check if the referenced tweet's data is cached in the database
+                referenced_tweet_data = tweetExists(referenced_tweet_id, user_id)
+                if not referenced_tweet_data:
+                    # If not cached, fetch the referenced tweet's data
+                    referenced_tweet_data = fetchSingleTweet(username, referenced_tweet_id)
+                
                 if referenced_tweet_data is not None:
                     # Format the referenced tweet's data
                     referenced_tweet = formatSingleTweet(theme, *referenced_tweet_data)
@@ -576,6 +665,7 @@ def formatTweets(theme, tweet_cache, tweets, topAccounts, topHashtags):
 
     return formatted_tweets, actual_name, totNumTweets
 
+    
 def sendEmail(recipient_email, subject, body, totNumTweets, username, cc_email=None, bcc_email=None):
     # Set up email parameters
     sender_email = "@gmail.com"
