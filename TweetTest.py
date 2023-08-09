@@ -19,12 +19,12 @@ for username in usernames:
     # Set the username in the request object
     request['args']['username'] = username
     # Invoke the fetchTweets function with the dummy request
-    tweets, topAccounts, topHashtags, tweet_cache = GmailTweetScraper2.fetchTweets(username, tweet_cache) #from request
+    tweets, topAccounts, topHashtags = GmailTweetScraper2.fetchTweets(username) #from request
     # Break if no tweets within 48hrs
     if tweets is None:
         continue
     # Format tweets & get name
-    formatted_tweets, actualName, totNumTweets = GmailTweetScraper2.formatTweets(theme, tweet_cache, tweets, topAccounts, topHashtags)
+    formatted_tweets, actualName, totNumTweets = GmailTweetScraper2.formatTweets(theme, tweets, topAccounts, topHashtags)
     # Send email with tweets in the body
     recipient_email = 'temp@manatuckhill.com'
     cc_email = ''
