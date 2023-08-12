@@ -33,21 +33,21 @@ CREATE TABLE IF NOT EXISTS users (
     user_id TEXT PRIMARY KEY,
     username TEXT,
     actual_name TEXT,
-    profileImageUrl TEXT
+    profile_image_url TEXT
 )
 ''')
 conn.commit()
 
 cursor.execute('''
-CREATE TABLE IF NOT EXISTS tweet_cache (
+CREATE TABLE IF NOT EXISTS tweets (
     tweet_id TEXT PRIMARY KEY,
+    user_id INTEGER,
     username TEXT,
     actual_name TEXT,
     tweet_text TEXT,
     replies INTEGER,
     retweets INTEGER,
     likes INTEGER,
-    profileImageUrl TEXT,
     tweetUrl TEXT,
     referencedTweetUrl TEXT,
     hours_since_post INTEGER,
@@ -62,28 +62,29 @@ def userExists(username):
     cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
     row = cursor.fetchone()
     if row: # Convert the tuple to a dictionary
-        columns = ['user_id', 'username', 'actual_name', 'profileImageUrl']
+        columns = ['user_id', 'username', 'actual_name', 'profile_image_url']
         return dict(zip(columns, row))
     return None
-
-def cacheUser(user_data):
-    cursor.execute('''
-    INSERT OR REPLACE INTO users (user_id, username, actual_name, profileImageUrl)
-    VALUES (?, ?, ?, ?)
-    ''', (user_data['user_id'], user_data['username'], user_data['actual_name'], user_data['profileImageUrl']))
-    conn.commit()
     
 def tweetExists(tweet_id, user_id):
     cursor.execute('SELECT * FROM tweets WHERE tweet_id = ? AND user_id = ?', (tweet_id, user_id))
     return cursor.fetchone()
     
+def cacheUser(user_data):
+    cursor.execute('''
+    INSERT OR REPLACE INTO users (
+        user_id, username, actual_name, profile_image_url
+    ) VALUES (?, ?, ?, ?)
+    ''', user_data)
+    conn.commit()
+
 def cacheTweet(tweet_data):
     cursor.execute('''
     INSERT OR REPLACE INTO tweets (
-        tweet_id, user_id, tweet_text, replies, retweets, likes,
+        tweet_id, user_id, username, actual_name, tweet_text, replies, retweets, likes,
         tweetUrl, referencedTweetUrl, hours_since_post,
         mins_since_post, media_urls, in_reply_to_user_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', tweet_data)
     conn.commit()
 
@@ -107,8 +108,8 @@ def get_article_info(url):
   
 # tweet_cache = {}
 
-def fetchSingleTweet(username, tweet_id):
-    cached_tweet = tweetExists(tweet_id, username)
+def fetchSingleTweet(username, tweet_id, user_id):
+    cached_tweet = tweetExists(tweet_id, user_id)
     if cached_tweet:
         return cached_tweet
         
@@ -130,7 +131,7 @@ def fetchSingleTweet(username, tweet_id):
             now_dt = datetime.datetime.now(pytz.timezone('US/Eastern'))
             minutes, seconds = divmod(sleep_duration, 60)
             resume_time = now_dt + datetime.timedelta(seconds=sleep_duration)
-            print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for {minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
+            print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for 0:{int(minutes)}:{int(seconds)} until {resume_time.strftime('%H:%M:%S')}")
             time.sleep(sleep_duration)
     if response.status_code == 429:
         reset_time = int(response.headers.get('x-rate-limit-reset')) # Get reset time from headers
@@ -156,7 +157,11 @@ def fetchSingleTweet(username, tweet_id):
     # Get the author's data
     actual_name = user['name']
     username = user['username']
-    profileImageUrl = user['profile_image_url']
+    profile_image_url = None
+    try:
+        profile_image_url = user['profile_image_url']
+    except KeyError:
+        profile_image_url = None
 
     # Get the tweet's data
     tweet_text = tweet['data']['text']
@@ -176,6 +181,7 @@ def fetchSingleTweet(username, tweet_id):
                 for media in tweet['includes']['media']:
                     if media['media_key'] == media_key and 'url' in media:
                         media_urls.append(media['url'])
+    media_urls = [url for url in media_urls if url]
 
     # Check if this tweet is a reply or a retweet
     referencedTweetUrl = None
@@ -193,22 +199,26 @@ def fetchSingleTweet(username, tweet_id):
             # Create the URL for the referenced tweet
             referencedTweetUrl = f"https://twitter.com/{referenced_username}/status/{ref_tweet['id']}"
 
-    tweet_data = (actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet['data'].get('in_reply_to_user_id', None))
-    
-    # Cache the tweet's data
-    tweet_data_db = (
-        tweet_id, user['id'], tweet_text, replies, retweets, likes,
-        tweetUrl, referencedTweetUrl, hours_since_post,
-        mins_since_post, ','.join(media_urls), tweet['data'].get('in_reply_to_user_id', None)
-    )
-    cacheTweet(tweet_data_db)
+    tweet_data = (tweet_id, user['id'], username, actual_name, tweet_text, replies, retweets, likes, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet['data'].get('in_reply_to_user_id', None))
+    # Check the type and content of media_urls and serialize accordingly
+    if tweet_data[12] is None or tweet_data[12] == '':
+        tweet_data[12] = json.dumps([])
+    elif isinstance(tweet_data[12], str):
+        tweet_data[12] = json.dumps([tweet_data[12]])
+    elif isinstance(tweet_data[12], list):
+        tweet_data[12] = json.dumps(tweet_data[12])
+    # Convert back to tuple
+    tweet_data = tuple(tweet_data)
+    #if len(tweet_data) == 15: # Check if the tuple has an extra element and remove it
+    #    tweet_data = tweet_data[:12] + tweet_data[13:]
+    cacheTweet(tweet_data)
     # Cache the user's data
-    user_data_db = (user['id'], username, user['name'], user['profile_image_url'])
+    user_data_db = (user['id'], username, actual_name, profile_image_url)
     cacheUser(user_data_db)
     
     return tweet_data
   
-def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
+def fetchTweets(username, max_tweets=5, max_hrs_ago=7):
     # Authenticate with Twitter API
     headers = create_headers(bearerToken)
 
@@ -229,7 +239,7 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
                 now_dt = datetime.datetime.now(pytz.timezone('US/Eastern'))
                 minutes, seconds = divmod(sleep_duration, 60)
                 resume_time = now_dt + datetime.timedelta(seconds=sleep_duration)
-                print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for {minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
+                print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for 0:{int(minutes)}:{int(seconds)} until {resume_time.strftime('%H:%M:%S')}")
                 time.sleep(sleep_duration)
         if response.status_code == 429:
             reset_time = int(response.headers.get('x-rate-limit-reset')) # Get reset time from headers
@@ -251,20 +261,17 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
             user = None
         # Get the user's data
         actual_name = user['data']['name']
-        profileImageUrl = user['data']['profile_image_url']
-        # Define the user_data dictionary
-        user_data = {
-            'user_id': user['data']['id'],
-            'username': username,
-            'actual_name': actual_name,
-            'profileImageUrl': profileImageUrl
-        }
+        profile_image_url = user['data']['profile_image_url']
+        # Define the user_data tuple
+        user_data = (user['data']['id'], username, actual_name, profile_image_url)
         cacheUser(user_data) # Cache the user's data
     else:
         user_data = user
 
+    user_id = user_data['user_id']
+    actual_name = user_data['actual_name']
     # Fetch the tweets
-    tweets_url = f"https://api.twitter.com/2/users/{user['data']['id']}/tweets?max_results={max_tweets}&tweet.fields=created_at,entities,public_metrics,source,attachments,referenced_tweets&expansions=attachments.media_keys,author_id&media.fields=url"
+    tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets?max_results={max_tweets}&tweet.fields=created_at,entities,public_metrics,source,attachments,referenced_tweets&expansions=attachments.media_keys,author_id&media.fields=url"
     response = requests.request("GET", tweets_url, headers=headers)
     print(f"Fetching tweets for user: {username}")
     
@@ -279,7 +286,7 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
             now_dt = datetime.datetime.now(pytz.timezone('US/Eastern'))
             minutes, seconds = divmod(sleep_duration, 60)
             resume_time = now_dt + datetime.timedelta(seconds=sleep_duration)
-            print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for {minutes}:{seconds} until {resume_time.strftime('%H:%M:%S')}")
+            print(f"Approaching rate limit at {now_dt.strftime('%H:%M:%S')}. Sleeping for 0:{int(minutes)}:{int(seconds)} until {resume_time.strftime('%H:%M:%S')}")
             time.sleep(sleep_duration)
     if response.status_code == 429:
         reset_time = int(response.headers.get('x-rate-limit-reset')) # Get reset time from headers
@@ -304,7 +311,7 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
         # Get the tweet's data
         tweet_id = int(tweet['id'])
         # Check if the tweet exists in the cache
-        cached_tweet = tweetExists(tweet_id, username)
+        cached_tweet = tweetExists(tweet_id, user_id)
         if cached_tweet:
             tweet_data.append(cached_tweet)
         else:
@@ -331,6 +338,8 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
                         if media['media_key'] == media_key:
                             if 'url' in media:
                                 media_urls.append(media['url'])
+            media_urls = [url for url in media_urls if url]
+            print(f"media urls - {media_urls}")
 
             # Check if this tweet is a reply or a retweet
             referencedTweetUrl = None
@@ -338,7 +347,18 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
                 # This is a reply or a retweet
                 referencedTweetUrl = f"https://twitter.com/{tweet['referenced_tweets'][0]['id']}"
              
-            tweet_data.append((actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet.get('in_reply_to_user_id', None)))
+            # Check the type and content of media_urls and serialize accordingly
+            if tweet_data[12] is None or tweet_data[12] == '':
+                tweet_data[12] = json.dumps([])
+            elif isinstance(tweet_data[12], str):
+                tweet_data[12] = json.dumps([tweet_data[12]])
+            elif isinstance(tweet_data[12], list):
+                tweet_data[12] = json.dumps(tweet_data[12])
+            # Convert back to tuple
+            tweet_data = tuple(tweet_data)
+            
+            tweet_data.append((tweet_id, user_id, username, actual_name, tweet_text, replies, retweets, likes,tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet.get('in_reply_to_user_id', None)))
+        
             cacheTweet(tweet_data[-1])
 
         tweetCount += 1
@@ -370,7 +390,7 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=2):
     return tweet_data, topAccounts, topHashtags
     
 
-def formatSingleTweet(theme, actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, *args, in_thread=False):
+def formatSingleTweet(theme, tweet_id, user_id, username, actual_name, tweet_text, replies, retweets, likes, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, in_reply_to_user_id, in_thread=False):
 
     tBlack = '#14171A'
     dark_grey = '#657786'
@@ -448,7 +468,7 @@ def formatSingleTweet(theme, actual_name, username, tweet_text, replies, retweet
                 <table>
                     <tr>
                         <td style='width: 25px; vertical-align: top'>
-                            <img src='{profileImageUrl}' style='width: 25px !important; height: 25px !important; border-radius: 50%;' width='25' height='25'>
+                            <img src='{profile_image_url}' style='width: 25px !important; height: 25px !important; border-radius: 50%;' width='25' height='25'>
                         </td>
                         <td style='vertical-align: top'>
                             <span style='font-weight: bold; color: {text_color}; padding-left: 10px'>{actual_name}</span>
@@ -501,20 +521,21 @@ def formatTweets(theme, tweets, topAccounts, topHashtags):
 
     # Group tweets by thread_id
     grouped_tweets = {}
-    username1 = tweets[0][1]
+    username1 = tweets[0][2]
     for tweet in tweets:
-        in_reply_to_user_id = tweet[12]  # Assuming this is where you're storing in_reply_to_user_id
+        in_reply_to_user_id = tweet[13]  # Assuming this is where you're storing in_reply_to_user_id
         if in_reply_to_user_id not in grouped_tweets:
             grouped_tweets[in_reply_to_user_id] = []
         grouped_tweets[in_reply_to_user_id].append(tweet)
 
     # Format top accounts and hashtags
+    print(topAccounts)
     formatted_top_accounts = ', '.join(f'{account} ({count}x)' for account, count in topAccounts if count > 1 and username1.lower() not in account.lower())
     formatted_top_hashtags = ', '.join(f'{hashtag} ({count}x)' for hashtag, count in topHashtags if count > 1)
     
     # Sort each group of tweets by timestamp
     for thread_id, group in grouped_tweets.items():
-        group.sort(key=lambda tweet: (tweet[9], tweet[10]))  # Sorting by hours_since_post and mins_since_post
+        group.sort(key=lambda tweet: (tweet[10], tweet[11]))  # Sorting by hours_since_post and mins_since_post
         
     plain_text_tweets = []
     formatted_tweets = []
@@ -532,8 +553,13 @@ def formatTweets(theme, tweets, topAccounts, topHashtags):
     processed_tweets = set()
     for thread_id, group in grouped_tweets.items():
         for i in range(len(group)):
-            actual_name, username, tweet_text, replies, retweets, likes, profileImageUrl, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, in_reply_to_user_id = group[i]
-            
+            if group[i][8] is None:
+                group[i] = tuple(item for j, item in enumerate(group[i]) if j != 8)
+            if len(group[i]) == 15: # Check if the tuple has an extra element and remove it
+                group[i] = group[i][:12] + group[i][13:]
+            print(group[i])
+            tweet_id, user_id, username, actual_name, tweet_text, replies, retweets, likes, tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, in_reply_to_user_id = group[i]
+    
             plain_text_tweets.append(tweet_text)
             
             if tweetUrl in processed_tweets:
@@ -568,10 +594,10 @@ def formatTweets(theme, tweets, topAccounts, topHashtags):
                 post_time = datetime.datetime.now() - datetime.timedelta(hours=hours_since_post)
                 post_time = post_time.strftime('%b %d')
             
-            if thread_id is not None:
-                post_time = f"{post_time} &middot; In Thread"
-                if username.lower() == in_reply_to_user_id.lower() and hours_since_post <= 48:
-                    referencedTweetUrl = None
+#            if thread_id is not None:
+#                post_time = f"{post_time} &middot; In Thread"
+#                if username.lower() == in_reply_to_user_id.lower() and hours_since_post <= 48:
+#                    referencedTweetUrl = None
                 
             # Create links for the individual tweet and the referenced tweet
             tweet_link = f'<a href="{tweetUrl}" style="color: #1DA1F2;">👀</a>'
@@ -583,12 +609,25 @@ def formatTweets(theme, tweets, topAccounts, topHashtags):
                 referenced_tweet_link = f'<a href="{referencedTweetUrl}" style="color: #1DA1F2;">💬</a>'
                 # Extract the tweet ID from the URL
                 referenced_tweet_id = referencedTweetUrl.split('/')[-1]
-                
                 # Check if the referenced tweet's data is cached in the database
                 referenced_tweet_data = tweetExists(referenced_tweet_id, user_id)
+                # Deserialize media_urls
+                media_urls_list = json.loads(referenced_tweet_data[12])
+                # Convert tuple to list for modification
+                referenced_tweet_data = list(referenced_tweet_data)
+                # Restore the original format of media_urls
+                if not media_urls_list:
+                    referenced_tweet_data[12] = ''
+                elif len(media_urls_list) == 1:
+                    referenced_tweet_data[12] = media_urls_list[0]
+                else:
+                    referenced_tweet_data[12] = media_urls_list
+                # Convert back to tuple
+                fetched_tweet_data = tuple(fetched_tweet_data)
+                
                 if not referenced_tweet_data:
                     # If not cached, fetch the referenced tweet's data
-                    referenced_tweet_data = fetchSingleTweet(username, referenced_tweet_id)
+                    referenced_tweet_data = fetchSingleTweet(username, referenced_tweet_id, user_id)
                 
                 if referenced_tweet_data is not None:
                     # Format the referenced tweet's data
@@ -636,7 +675,7 @@ def formatTweets(theme, tweets, topAccounts, topHashtags):
             <table style='max-width: auto; margin: 10px auto; padding: 0px; font-family: Roboto, sans-serif; font-size: 15px; line-height: 1.2; background-color: {background_color};'>
                 <tr>
                     <td style='width: 22px; vertical-align: top; padding-top: 22px; padding-left: 8px;'>
-                        <img src='{profileImageUrl}' style='width: 41px !important; height: 41px !important; border-radius: 50%;' width='41' height='41'>
+                        <img src='{profile_image_url}' style='width: 41px !important; height: 41px !important; border-radius: 50%;' width='41' height='41'>
                     </td>
                     <td style='width: 100%; vertical-align: top; padding-top: 24px; padding-left: 10px;'>
                         <span style='font-weight: bold; color: {text_color};'>{actual_name}</span>
