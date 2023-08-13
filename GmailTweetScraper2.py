@@ -339,6 +339,8 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=7):
                             if 'url' in media:
                                 media_urls.append(media['url'])
             media_urls = [url for url in media_urls if url]
+            if len(media_urls) == 0:
+                media_urls = None
             print(f"media urls - {media_urls}")
 
             # Check if this tweet is a reply or a retweet
@@ -346,8 +348,14 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=7):
             if 'referenced_tweets' in tweet:
                 # This is a reply or a retweet
                 referencedTweetUrl = f"https://twitter.com/{tweet['referenced_tweets'][0]['id']}"
-             
+            
+            tweet_data.append((tweet_id, user_id, username, actual_name, tweet_text, replies, retweets, likes,tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet.get('in_reply_to_user_id', None)))
+        
+            print(f"tweet data - {tweet_data[-1]}")
+            cacheTweet(tweet_data[-1])
+            
             # Check the type and content of media_urls and serialize accordingly
+            print(tweet_data[12])
             if tweet_data[12] is None or tweet_data[12] == '':
                 tweet_data[12] = json.dumps([])
             elif isinstance(tweet_data[12], str):
@@ -356,10 +364,6 @@ def fetchTweets(username, max_tweets=5, max_hrs_ago=7):
                 tweet_data[12] = json.dumps(tweet_data[12])
             # Convert back to tuple
             tweet_data = tuple(tweet_data)
-            
-            tweet_data.append((tweet_id, user_id, username, actual_name, tweet_text, replies, retweets, likes,tweetUrl, referencedTweetUrl, hours_since_post, mins_since_post, media_urls, tweet.get('in_reply_to_user_id', None)))
-        
-            cacheTweet(tweet_data[-1])
 
         tweetCount += 1
         # Collect statistics
@@ -612,7 +616,10 @@ def formatTweets(theme, tweets, topAccounts, topHashtags):
                 # Check if the referenced tweet's data is cached in the database
                 referenced_tweet_data = tweetExists(referenced_tweet_id, user_id)
                 # Deserialize media_urls
-                media_urls_list = json.loads(referenced_tweet_data[12])
+                if media_urls_list:
+                    media_urls_list = json.loads(referenced_tweet_data[12])
+                else:
+                    media_urls_list = None
                 # Convert tuple to list for modification
                 referenced_tweet_data = list(referenced_tweet_data)
                 # Restore the original format of media_urls
