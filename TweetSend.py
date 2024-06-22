@@ -1,14 +1,15 @@
-
-import GmailTweetScraper2
+import GmailTweetScraper
 
 startString = ''
-theme = 'light' # light / dark
 tweet_cache = {}
+theme = 'light' # light / dark
+max_tweets = 50
+max_hrs_ago = 72
 
-usernames = ['UrbanKaoboy',
+usernames = ['elonmusk',
             'lukegromen',
             'EpsilonTheory',
-            'elonmusk',
+            'UrbanKaoboy',
             'biancoresearch',
             'FedGuy12',
             'martymakary',
@@ -16,10 +17,8 @@ usernames = ['UrbanKaoboy',
             'WallStCynic',
             'cryptohayes',
             'Ayjchan',
-            'nntaleb',
             'SantiagoAuFund',
             'GuyDealership',
-            'VPrasadMDMPH',
             'DiMartinoBooth',
             'HuntBlazer',
             'EconguyRosie',
@@ -39,20 +38,20 @@ for username in usernames:
     # Set the username in the request object
     request['args']['username'] = username
     # Invoke the fetchTweets function with the dummy request
-    tweets, topAccounts, topHashtags = GmailTweetScraper2.fetchTweets(username) #from request
+    tweets, topAccounts, topHashtags, tweet_cache = GmailTweetScraper.fetchTweets(username, tweet_cache, max_tweets, max_hrs_ago) #from request
     # Break if no tweets within 48hrs
     if tweets is None:
         continue
     # Format tweets & get name
-    formatted_tweets, actualName, totNumTweets = GmailTweetScraper2.formatTweets(theme, tweets, topAccounts, topHashtags)
+    formatted_tweets, actualName, totNumTweets = GmailTweetScraper.formatTweets(theme, tweet_cache, tweets, topAccounts, topHashtags)
     # Send email with tweets in the body
     recipient_email = 'mark@manatuckhill.com'
     cc_email = ''
-    bcc_email = 'temp@manatuckhill.com'
-    subject = GmailTweetScraper2.get_email_subject(actualName)
+    bcc_email = 'etreed0714@gmail.com'
+    subject = GmailTweetScraper.get_email_subject(actualName)
     body_content = '\n'.join(formatted_tweets)  # Combine all tweets into a single string
     background_color = '#14171A' if theme == 'dark' else '#ffffff'
     body = f"<div style='background-color: {background_color};'>{body_content}</div>"
-    GmailTweetScraper2.sendEmail(recipient_email, subject, body, totNumTweets, username, cc_email, bcc_email)
+    GmailTweetScraper.sendEmail(recipient_email, subject, body, totNumTweets, username, cc_email, bcc_email)
 
 # print("Process completed.")
